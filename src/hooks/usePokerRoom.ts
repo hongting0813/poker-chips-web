@@ -13,6 +13,7 @@ export interface Player {
     balance: number;
     currentBet: number;
     stagedBet: number;
+    color?: string;
 }
 
 export interface BetPayload {
@@ -125,6 +126,7 @@ export const usePokerRoom = () => {
                     balance: row.balance,
                     currentBet: row.current_bet,
                     stagedBet: row.staged_bet || 0,
+                    color: row.color,
                 };
             });
         };
@@ -260,7 +262,7 @@ export const usePokerRoom = () => {
     };
 
     // Join Room -> Insert Player Row
-    const joinRoom = async (id: string, name: string, seatIndex: number, avatar: string, buyIn: number) => {
+    const joinRoom = async (id: string, name: string, seatIndex: number, avatar: string, buyIn: number, color: string) => {
         setRoomId(id);
 
         // Check if I am already HOST in this room to prevent demotion
@@ -279,7 +281,7 @@ export const usePokerRoom = () => {
         }
 
         setIsHost(false);
-        myInfoRef.current = { name, seatIndex, avatar, balance: buyIn, currentBet: 0 };
+        myInfoRef.current = { name, seatIndex, avatar, balance: buyIn, currentBet: 0, color: color } as any;
 
         // Insert Player into DB
         // Check if already joined? (Upsert)
@@ -294,7 +296,8 @@ export const usePokerRoom = () => {
                 balance: buyIn,
                 current_bet: 0,
                 is_host: false,
-                last_seen: new Date().toISOString()
+                last_seen: new Date().toISOString(),
+                color: color
             }, { onConflict: 'room_id, user_id' });
 
         if (error) {
@@ -410,6 +413,49 @@ export const usePokerRoom = () => {
         return cleanup;
     }, [cleanup]);
 
+    const leaveRoom = useCallback(() => {
+        cleanup();
+        setRoomId(null);
+        setPlayers([]);
+        setStatus('idle');
+        setPot(0);
+        setIsHost(false);
+    }, [cleanup]);
+
+    // Resume as Host
+    const resumeHost = async (roomIdToResume: string): Promise<boolean> => {
+        // 1. Check if room exists
+        const { data: room, error: roomError } = await supabase
+            .from('rooms')
+            .select('id')
+            .eq('id', roomIdToResume)
+            .single();
+
+        if (roomError || !room) {
+            alert('Room does not exist.');
+            return false;
+        }
+
+        // 2. Check if I am Host
+        const { data: player, error: playerError } = await supabase
+            .from('players')
+            .select('is_host')
+            .eq('room_id', roomIdToResume)
+            .eq('user_id', myPlayerId)
+            .single();
+
+        if (playerError || !player || !player.is_host) {
+            alert('You are not the host of this room.');
+            return false;
+        }
+
+        // 3. Connect
+        setRoomId(roomIdToResume);
+        setIsHost(true);
+        connectToRoom(roomIdToResume);
+        return true;
+    };
+
     return {
         roomId,
         isHost,
@@ -419,6 +465,8 @@ export const usePokerRoom = () => {
         pot,
         createRoom,
         joinRoom,
+        leaveRoom,
+        resumeHost, // Added
         sendBet,
         stageBet,
         confirmBet,
