@@ -29,6 +29,7 @@ interface FlyingChip {
 export default function Home() {
     const [view, setView] = useState<ViewMode>('dealer');
     const [dealerMode, setDealerMode] = useState<'menu' | 'join'>('menu');
+    const [setupStep, setSetupStep] = useState(1);
     const [flyingChips, setFlyingChips] = useState<FlyingChip[]>([]);
     const [incomingBets, setIncomingBets] = useState<Record<string, number>>({});
     const [stagedBetSums, setStagedBetSums] = useState<Record<string, number>>({});
@@ -76,6 +77,8 @@ export default function Home() {
         const handlePopState = (event: PopStateEvent) => {
             leaveRoom();
             setView('dealer'); // Return to dealer view on back
+            setSetupStep(1);   // Reset setup step
+            setDealerMode('menu'); // Reset dealer mode
         };
 
         window.addEventListener('popstate', handlePopState);
@@ -88,6 +91,8 @@ export default function Home() {
         } else {
             leaveRoom();
             setView('dealer');
+            setSetupStep(1);   // Reset setup step
+            setDealerMode('menu'); // Reset dealer mode
         }
     };
 
@@ -198,7 +203,7 @@ export default function Home() {
 
     const getStagedCoordinates = (index: number) => {
         const { x, y } = getSeatCoordinates(index);
-        return { x: x * 0.75, y: y * 0.75 }; // 75% distance
+        return { x: x * 0.55, y: y * 0.55 }; // 55% distance (even further from avatar, closer to center)
     };
 
     // Setup dealer listener for bets
@@ -241,8 +246,11 @@ export default function Home() {
                         endX = 0;
                         endY = 0;
 
-                        // For confirm bets, we don't use incomingBets because it goes to pot, 
-                        // and pot update isn't masked currently (and doesn't need to be as much)
+                        // Immediately clear staged chips visually to avoid "double chips" look
+                        setStagedBetSums(prev => ({
+                            ...prev,
+                            [payload.playerId]: 0
+                        }));
                     }
                 }
 
@@ -307,8 +315,8 @@ export default function Home() {
             {/* Background Texture Effect */}
             <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white/10 to-transparent opacity-30 mix-blend-overlay"></div>
 
-            {/* Dev Mode View Toggle - Hidden when connected */}
-            {status !== 'connected' && (
+            {/* Dev Mode View Toggle - Hidden when connected or in setup screens */}
+            {status !== 'connected' && dealerMode !== 'join' && setupStep === 1 && (
                 <div className="fixed top-4 right-4 md:top-6 md:right-6 z-50 flex gap-2 bg-black/40 p-1 rounded-full backdrop-blur-sm border border-white/10">
                     <button
                         onClick={() => setView('dealer')}
@@ -429,16 +437,14 @@ export default function Home() {
                                                 opacity: 0,
                                                 x: chip.startX,
                                                 y: chip.startY,
-                                                scale: 0.5,
-                                                rotate: Math.random() * 360
+                                                scale: 0.8, // Start slightly smaller but no rotation
                                             }}
                                             animate={{
                                                 opacity: 1,
                                                 x: chip.endX,
                                                 y: chip.endY,
-                                                scale: 1,
-                                                rotate: 0,
-                                                transition: { type: 'spring', damping: 20, stiffness: 100, duration: chip.duration || 0.6 }
+                                                scale: 1, // Smooth scale up
+                                                transition: { ease: "easeInOut", duration: chip.duration || 0.6 } // Smooth curve, no spring
                                             }}
                                             exit={{ opacity: 0, scale: 0.5, transition: { duration: 0.2 } }}
                                             style={{ position: 'absolute' }}
@@ -518,12 +524,15 @@ export default function Home() {
                 </div>
             ) : (
                 // Player View
-                <div className="z-10 w-full max-w-md flex flex-col items-center h-full justify-center">
+                <div className="z-10 w-full max-w-5xl flex flex-col items-center h-full justify-center">
                     {!roomId || status !== 'connected' ? (
-                        <JoinRoom onJoin={(id, name, seat, avatar, buyIn, color) => {
-                            joinRoom(id, name, seat, avatar, buyIn, color);
-                            window.history.pushState({ room: id }, '');
-                        }} />
+                        <JoinRoom
+                            onJoin={(id, name, seat, avatar, buyIn, color) => {
+                                joinRoom(id, name, seat, avatar, buyIn, color);
+                                window.history.pushState({ room: id }, '');
+                            }}
+                            onStepChange={setSetupStep}
+                        />
                     ) : (
                         <div className="flex flex-col items-center w-full h-full pt-16 pb-6 px-4 relative">
                             {/* UPPER SECTION (50%) - Info & Decisions */}
@@ -603,7 +612,7 @@ export default function Home() {
 
 
                                 {/* Betting Controls */}
-                                <div className="w-full perspective-[800px]">
+                                <div className="w-full">
                                     <div className="flex flex-wrap gap-4 items-center justify-center px-4">
                                         {CHIP_VALUES.slice().reverse().map((val) => (
                                             <div key={val} className="shrink-0 transition-transform active:scale-95">

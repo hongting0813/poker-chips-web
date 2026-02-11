@@ -40,7 +40,7 @@ const JoinRoom: React.FC<JoinRoomProps> = ({ onJoin, onStepChange }) => {
     };
 
     return (
-        <div className="flex flex-col items-center gap-3 md:gap-4 p-4 md:p-8 bg-black/80 rounded-xl backdrop-blur-md border border-white/10 shadow-2xl w-full max-w-[95%] md:max-w-md mx-auto max-h-[95vh] overflow-y-auto landscape:max-w-4xl landscape:flex-row landscape:items-start">
+        <div className="flex flex-col items-center gap-3 md:gap-4 p-4 md:p-8 bg-black/80 rounded-xl backdrop-blur-md border border-white/10 shadow-2xl w-full max-w-[95%] md:max-w-2xl mx-auto max-h-[95vh] overflow-y-auto landscape:max-w-5xl landscape:flex-row landscape:items-start">
             <h2 className="text-xl md:text-2xl font-bold text-white tracking-widest uppercase text-shadow-lg mb-1 md:mb-2 landscape:hidden">
                 {step === 1 ? 'Enter Room' : 'Player Setup'}
             </h2>

@@ -19,30 +19,36 @@ const DraggableChip: React.FC<DraggableChipProps> = ({ value, color, onBet }) =>
         setIsDragging(down);
 
         if (down) {
-            // Follow cursor
-            controls.start({ x: mx, y: my, scale: 1.1, rotateX: my / 4 });
+            // Follow cursor - Flat 2D movement
+            controls.start({ x: mx, y: my, scale: 1.1, rotateX: 0 });
         } else {
             // Released
-            const isSwipeUp = my < -100;
-            const isFastEnough = vy > 0.5;
 
-            // Note: use-gesture velocity is usually positive magnitude. 
-            // We verify direction using 'my' (negative for up) or 'dy' (negative for up).
+            // Check move distance (negative is up)
+            // Allow if moved far enough (Drag & Drop style) OR fast enough (Flick style)
+            const isFarEnough = my < -80;
+            const isFastEnough = vy > 0.1 && my < -30;
 
-            if (isSwipeUp && isFastEnough) {
+            console.log('Drag Release:', { my, vy, isFarEnough, isFastEnough });
+
+            if (isFarEnough || isFastEnough) {
                 // Trigger Bet
-                // Pass velocity (Y axis speed). 'vy' is pixels/ms or similar? 
-                // use-gesture returns px/ms. Let's scale it up for the "eruptive" feel.
-                onBet(value, vy * 5); // Scale up for effect
+                // Use velocity if available, otherwise default to a reasonable speed
+                const speed = vy > 0.1 ? vy : 0.5;
+                onBet(value, speed * 5);
 
-                // Animate flying away (upwards)
+                // Animate flying away (upwards) - Smooth Linear
                 controls.start({
                     y: -1000,
                     opacity: 0,
-                    transition: { duration: 0.4, ease: "easeIn" }
+                    transition: { duration: 0.4, ease: "easeOut" }
                 }).then(() => {
                     // Reset position instantly after animation
-                    controls.set({ x: 0, y: 0, opacity: 0, scale: 0.5, rotateX: 0 });
+                    // Force stop to clear any running animations
+                    controls.stop();
+
+                    // Ensure strict zeroing of position
+                    controls.set({ x: 0, y: 0, opacity: 0, scale: 0.5 });
 
                     // Animate appearing back
                     controls.start({
@@ -52,7 +58,7 @@ const DraggableChip: React.FC<DraggableChipProps> = ({ value, color, onBet }) =>
                     });
                 });
             } else {
-                // Rebound to original position
+                // Rebound to original position - stricter return
                 controls.start({ x: 0, y: 0, scale: 1, rotateX: 0, transition: { type: "spring", stiffness: 500, damping: 30 } });
             }
         }
