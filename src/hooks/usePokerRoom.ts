@@ -14,6 +14,16 @@ export interface Player {
     currentBet: number;
     stagedBet: number;
     color?: string;
+    isDealer?: boolean; // Added for Dealer Button (D)
+}
+
+export type GameStatus = 'waiting' | 'pre-flop' | 'flop' | 'turn' | 'river' | 'showdown';
+
+export interface RoomState {
+    id: string;
+    status: GameStatus;
+    pot: number;
+    dealerIndex: number;
 }
 
 export interface BetPayload {
@@ -44,6 +54,8 @@ export const usePokerRoom = () => {
     const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
     const [myPlayerId, setMyPlayerId] = useState<string>('');
     const [pot, setPot] = useState<number>(0);
+    const [gameStatus, setGameStatus] = useState<GameStatus>('waiting');
+    const [dealerIndex, setDealerIndex] = useState<number>(-1);
 
     const channelRef = useRef<RealtimeChannel | null>(null);
 
@@ -133,9 +145,20 @@ export const usePokerRoom = () => {
 
         const initialMappedPlayers = mapPlayers(existingPlayers || []);
         setPlayers(initialMappedPlayers);
-        // Recalculate Pot for initial state
-        const initialPot = initialMappedPlayers.reduce((sum, p) => sum + (p.currentBet || 0), 0);
-        setPot(initialPot);
+
+        // Fetch Room State
+        const { data: roomData } = await supabase
+            .from('rooms')
+            .select('*')
+            .eq('id', roomIdToConnect)
+            .single();
+
+        if (roomData) {
+            setPot(roomData.pot || 0);
+            setGameStatus(roomData.game_status || 'waiting');
+            setDealerIndex(roomData.dealer_index ?? -1);
+        }
+
         setStatus('connected');
 
         // 2. Subscribe to Changes
@@ -160,9 +183,19 @@ export const usePokerRoom = () => {
                     if (freshPlayers) {
                         const mapped = mapPlayers(freshPlayers);
                         setPlayers(mapped);
+                    }
 
-                        const totalBet = mapped.reduce((sum, p) => sum + (p.currentBet || 0), 0);
-                        setPot(totalBet);
+                    // Also watch rooms for pot/status changes
+                    const { data: roomData } = await supabase
+                        .from('rooms')
+                        .select('*')
+                        .eq('id', roomIdToConnect)
+                        .single();
+
+                    if (roomData) {
+                        setPot(roomData.pot || 0);
+                        setGameStatus(roomData.game_status || 'waiting');
+                        setDealerIndex(roomData.dealer_index ?? -1);
                     }
 
                     if (payload.eventType === 'UPDATE' && onBetRef.current) {
@@ -223,7 +256,7 @@ export const usePokerRoom = () => {
 
         const { error: roomError } = await supabase
             .from('rooms')
-            .insert([{ id: newRoomId, status: 'waiting', pot: 0 }]);
+            .insert([{ id: newRoomId, game_status: 'waiting', pot: 0 }]);
 
         if (roomError) {
             console.error('Failed to create room:', roomError);
@@ -422,7 +455,7 @@ export const usePokerRoom = () => {
         setIsHost(false);
     }, [cleanup]);
 
-    // Resume as Host
+    // Resume as Host or Player
     const resumeHost = async (roomIdToResume: string): Promise<boolean> => {
         // 1. Check if room exists
         const { data: room, error: roomError } = await supabase
@@ -436,7 +469,7 @@ export const usePokerRoom = () => {
             return false;
         }
 
-        // 2. Check if I am Host
+        // 2. Check integrity
         const { data: player, error: playerError } = await supabase
             .from('players')
             .select('is_host')
@@ -444,16 +477,132 @@ export const usePokerRoom = () => {
             .eq('user_id', myPlayerId)
             .single();
 
-        if (playerError || !player || !player.is_host) {
-            alert('You are not the host of this room.');
+        if (playerError || !player) {
+            alert('You are not a member of this room.');
             return false;
         }
 
         // 3. Connect
         setRoomId(roomIdToResume);
-        setIsHost(true);
+        setIsHost(player.is_host);
         connectToRoom(roomIdToResume);
         return true;
+    };
+
+    // Check if room exists and if I am already in it
+    const checkRoom = async (roomIdCheck: string) => {
+        // 1. Check Room Exists
+        const { data: room, error: roomError } = await supabase
+            .from('rooms')
+            .select('id')
+            .eq('id', roomIdCheck)
+            .single();
+
+        if (roomError || !room) {
+            return { exists: false, member: false, occupiedSeats: [], takenNames: [] };
+        }
+
+        // 2. Fetch ALL players to determine state
+        const { data: roomPlayers } = await supabase
+            .from('players')
+            .select('*')
+            .eq('room_id', roomIdCheck);
+
+        const playersList = roomPlayers || [];
+
+        // Check if I am already in
+        const myPlayer = playersList.find(p => p.user_id === myPlayerId);
+
+        // Gather validation data
+        const occupiedSeats = playersList.map(p => p.seat_index).filter(s => s >= 0); // Filter out host (-1)
+        const takenNames = playersList.map(p => p.name);
+
+        if (myPlayer) {
+            return { exists: true, member: true, player: myPlayer, occupiedSeats, takenNames };
+        }
+
+        return { exists: true, member: false, occupiedSeats, takenNames };
+    };
+
+    // DEALER ACTIONS -----------------------------------------------
+
+    // 1. Collect all confirmed bets (current_bet) into pot
+    const collectBets = async () => {
+        if (!roomId || !isHost) return;
+
+        // Calculate total to add
+        const currentTotalBet = players.reduce((sum, p) => sum + (p.currentBet || 0), 0);
+        if (currentTotalBet === 0) return;
+
+        // Transactional update: Add to Room Pot AND Clear all Player currentBets
+        // Note: Supabase doesn't have multi-table transactions in a single JS call easily without RPC
+        // We'll use a sequence, but for high stakes a Stored Procedure is better.
+
+        // Update Players in this room: current_bet = 0
+        const { error: pError } = await supabase
+            .from('players')
+            .update({ current_bet: 0, last_seen: new Date().toISOString() })
+            .eq('room_id', roomId);
+
+        if (pError) console.error('Error clearing player bets:', pError);
+
+        // Update Room Pot
+        const { error: rError } = await supabase
+            .from('rooms')
+            .update({ pot: pot + currentTotalBet })
+            .eq('id', roomId);
+
+        if (rError) console.error('Error updating pot:', rError);
+    };
+
+    // 2. Distribute Pot to winner(s)
+    const distributePot = async (winnerId: string) => {
+        if (!roomId || !isHost || pot <= 0) return;
+
+        const winner = players.find(p => p.id === winnerId);
+        if (!winner) return;
+
+        // Add pot to winner balance
+        const { error: pError } = await supabase
+            .from('players')
+            .update({
+                balance: winner.balance + pot,
+                last_seen: new Date().toISOString()
+            })
+            .eq('user_id', winnerId)
+            .eq('room_id', roomId);
+
+        if (pError) console.error('Error giving pot to winner:', pError);
+
+        // Clear Room Pot
+        const { error: rError } = await supabase
+            .from('rooms')
+            .update({ pot: 0 })
+            .eq('id', roomId);
+
+        if (rError) console.error('Error clearing pot:', rError);
+    };
+
+    // 3. Update Game Status
+    const updateGameStatus = async (newStatus: GameStatus) => {
+        if (!roomId || !isHost) return;
+        const { error } = await supabase
+            .from('rooms')
+            .update({ game_status: newStatus })
+            .eq('id', roomId);
+
+        if (error) console.error('Error updating status:', error);
+    };
+
+    // 4. Set Dealer Seat
+    const setDealerSeat = async (index: number) => {
+        if (!roomId || !isHost) return;
+        const { error } = await supabase
+            .from('rooms')
+            .update({ dealer_index: index })
+            .eq('id', roomId);
+
+        if (error) console.error('Error setting dealer index:', error);
     };
 
     return {
@@ -463,14 +612,21 @@ export const usePokerRoom = () => {
         status,
         myPlayerId,
         pot,
+        gameStatus,
+        dealerIndex,
         createRoom,
         joinRoom,
         leaveRoom,
-        resumeHost, // Added
+        resumeHost,
+        checkRoom,
         sendBet,
         stageBet,
         confirmBet,
         clearBet,
         setOnBet,
+        collectBets,
+        distributePot,
+        updateGameStatus,
+        setDealerSeat,
     };
 };

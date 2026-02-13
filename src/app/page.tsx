@@ -69,7 +69,14 @@ export default function Home() {
         clearBet,
         setOnBet,
         pot,
-        myPlayerId
+        myPlayerId,
+        checkRoom,
+        gameStatus,
+        dealerIndex,
+        collectBets,
+        distributePot,
+        updateGameStatus,
+        setDealerSeat,
     } = usePokerRoom();
 
     // Handle Browser Back Button
@@ -421,7 +428,7 @@ export default function Home() {
                       border-4 md:border-[6px] border-white/10 bg-green-800/50 backdrop-blur-sm flex flex-col items-center justify-center shadow-inner z-10 transition-all duration-300`}
                                 style={potStyle}
                             >
-                                <div className="text-white/30 font-bold text-xs md:text-lg tracking-widest mb-1">POT</div>
+                                <div className="text-white/30 font-bold text-xs md:text-lg tracking-widest mb-1">{gameStatus.toUpperCase()}</div>
                                 <div className="text-yellow-400 font-mono text-3xl md:text-5xl font-black mb-2 md:mb-6 tracking-tighter drop-shadow-md">${pot}</div>
                                 {/* Pot Chips (Placeholder visual using simplified stack) */}
                                 {pot > 0 && <ChipStack amount={pot} />}
@@ -458,19 +465,36 @@ export default function Home() {
                             {/* Seats & Players */}
                             {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((seatIndex) => {
                                 const player = players.find(p => p.seatIndex === seatIndex);
+                                const isDealer = dealerIndex === seatIndex;
                                 return (
                                     <div
                                         key={seatIndex}
                                         className="absolute top-1/2 left-1/2 w-20 h-20 md:w-32 md:h-32 flex flex-col items-center justify-center transition-all duration-500 z-20"
                                         style={getSeatStyle(seatIndex)}
+                                        onClick={() => {
+                                            if (isHost) {
+                                                if (gameStatus === 'showdown' && player) {
+                                                    distributePot(player.id);
+                                                } else {
+                                                    setDealerSeat(seatIndex);
+                                                }
+                                            }
+                                        }}
                                     >
                                         {/* Seat Visual (Empty) */}
-                                        <div className={`w-14 h-14 md:w-24 md:h-24 rounded-full border-2 md:border-4 flex items-center justify-center text-xl md:text-4xl relative shadow-[0_10px_20px_rgba(0,0,0,0.5)] transition-all
-                             ${player ? 'border-yellow-500 text-white scale-110' : 'bg-white/5 border-white/10 text-white/10 border-dashed'}
+                                        <div className={`w-14 h-14 md:w-24 md:h-24 rounded-full border-2 md:border-4 flex items-center justify-center text-xl md:text-4xl relative shadow-[0_10px_20px_rgba(0,0,0,0.5)] transition-all cursor-pointer group
+                             ${player ? 'border-yellow-500 text-white scale-110' : 'bg-white/5 border-white/10 text-white/10 border-dashed hover:bg-white/10'}
                           `}
                                             style={player ? { backgroundColor: player.color || 'rgba(0,0,0,0.8)' } : {}}
                                         >
                                             {player ? player.avatar : <span className="font-black text-xl md:text-3xl opacity-50">{seatIndex}</span>}
+
+                                            {/* Dealer Button (D) */}
+                                            {isDealer && (
+                                                <div className="absolute -top-2 -right-2 w-6 h-6 md:w-8 md:h-8 bg-white text-black rounded-full flex items-center justify-center font-bold text-[10px] md:text-sm border-2 border-black shadow-lg animate-bounce">
+                                                    D
+                                                </div>
+                                            )}
 
                                             {/* Balance Badge */}
                                             {player && (
@@ -519,6 +543,50 @@ export default function Home() {
                                     </div>
                                 );
                             })}
+
+                            {/* Dealer Controls Footer */}
+                            {isHost && (
+                                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-black/80 p-2 rounded-full border border-white/10 backdrop-blur-xl shadow-2xl scale-90 md:scale-100">
+                                    <div className="px-4 py-1 border-r border-white/10">
+                                        <span className="text-[10px] text-white/30 uppercase tracking-widest block leading-none mb-1">Status</span>
+                                        <span className="text-yellow-400 font-bold text-xs uppercase">{gameStatus}</span>
+                                    </div>
+
+                                    <button
+                                        onClick={() => {
+                                            const stages: any[] = ['waiting', 'pre-flop', 'flop', 'turn', 'river', 'showdown'];
+                                            const idx = stages.indexOf(gameStatus);
+                                            const next = stages[(idx + 1) % stages.length];
+                                            updateGameStatus(next);
+                                        }}
+                                        className="px-4 py-2 rounded-full text-[10px] font-bold bg-white/10 text-white hover:bg-white/20 transition-all flex items-center gap-2 group"
+                                    >
+                                        NEXT STAGE
+                                        <span className="opacity-50 group-hover:translate-x-1 transition-transform">→</span>
+                                    </button>
+
+                                    <button
+                                        onClick={collectBets}
+                                        disabled={pot > 0 && players.every(p => p.currentBet === 0)}
+                                        className="px-6 py-2 rounded-full text-[10px] font-bold bg-yellow-500 text-black hover:bg-yellow-400 transition-all shadow-lg active:scale-95 disabled:opacity-50"
+                                    >
+                                        COLLECT BETS
+                                    </button>
+
+                                    {gameStatus === 'showdown' && (
+                                        <div className="px-4 py-2 rounded-full text-[10px] font-bold bg-green-500 text-white animate-pulse">
+                                            SELECT WINNER ↓
+                                        </div>
+                                    )}
+
+                                    <button
+                                        onClick={() => updateGameStatus('waiting')}
+                                        className="px-4 py-2 rounded-full text-[10px] font-bold bg-red-900/40 text-red-200 hover:bg-red-900/60 border border-red-500/20 transition-all"
+                                    >
+                                        RESET
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
@@ -532,6 +600,14 @@ export default function Home() {
                                 window.history.pushState({ room: id }, '');
                             }}
                             onStepChange={setSetupStep}
+                            checkRoom={checkRoom}
+                            onResume={async (id) => {
+                                // Reuse logic: JoinRoom calls this if checkRoom says we are a member
+                                const success = await resumeHost(id); // resumeHost now should handle regular players too if we update it or use joinRoom
+                                if (success) {
+                                    window.history.pushState({ room: id }, '');
+                                }
+                            }}
                         />
                     ) : (
                         <div className="flex flex-col items-center w-full h-full pt-16 pb-6 px-4 relative">
