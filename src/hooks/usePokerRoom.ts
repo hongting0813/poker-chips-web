@@ -15,15 +15,22 @@ export interface Player {
     stagedBet: number;
     color?: string;
     isDealer?: boolean; // Added for Dealer Button (D)
+    playerAction?: string; // check, bet, call, raise, fold
+    hasActedThisRound?: boolean;
+    isFolded?: boolean;
 }
 
 export type GameStatus = 'waiting' | 'pre-flop' | 'flop' | 'turn' | 'river' | 'showdown';
+export type PlayerAction = 'check' | 'bet' | 'call' | 'raise' | 'fold' | null;
 
 export interface RoomState {
     id: string;
     status: GameStatus;
     pot: number;
     dealerIndex: number;
+    currentTurnSeatIndex?: number;
+    currentHighestBet?: number;
+    bettingRoundComplete?: boolean;
 }
 
 export interface BetPayload {
@@ -218,6 +225,37 @@ export const usePokerRoom = () => {
                                 playerId: newRecord.user_id,
                                 timestamp: Date.now(),
                             });
+                        }
+                    }
+                }
+            )
+            .on(
+                'postgres_changes',
+                {
+                    event: '*', // INSERT, UPDATE, DELETE
+                    schema: 'public',
+                    table: 'rooms',
+                    filter: `id=eq.${roomIdToConnect}`,
+                },
+                async (payload) => {
+                    console.log('Room changed:', payload);
+                    // Directly update from payload for immediate UI response
+                    if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
+                        const newRecord = payload.new as any;
+                        if (newRecord) {
+                            setPot(newRecord.pot || 0);
+                            setGameStatus(newRecord.game_status || 'waiting');
+                            setDealerIndex(newRecord.dealer_index ?? -1);
+                            // Sync turn-based betting state
+                            if (typeof newRecord.current_turn_seat_index === 'number') {
+                                setCurrentTurnSeatIndex(newRecord.current_turn_seat_index);
+                            }
+                            if (typeof newRecord.current_highest_bet === 'number') {
+                                setCurrentHighestBet(newRecord.current_highest_bet);
+                            }
+                            if (typeof newRecord.betting_round_complete === 'boolean') {
+                                setBettingRoundComplete(newRecord.betting_round_complete);
+                            }
                         }
                     }
                 }
@@ -605,6 +643,319 @@ export const usePokerRoom = () => {
         if (error) console.error('Error setting dealer index:', error);
     };
 
+    // 5. Move Button to Next Player (Clockwise)
+    const moveButtonToNext = async () => {
+        if (!roomId || !isHost) return;
+
+        // Get all occupied seats sorted by seat index
+        const occupiedSeats = players
+            .filter(p => p.seatIndex >= 0)
+            .map(p => p.seatIndex)
+            .sort((a, b) => a - b);
+
+        if (occupiedSeats.length === 0) return;
+
+        // If no dealer set, start with first occupied seat
+        if (dealerIndex === -1) {
+            await setDealerSeat(occupiedSeats[0]);
+            return;
+        }
+
+        // Find next occupied seat clockwise
+        const nextSeats = occupiedSeats.filter(s => s > dealerIndex);
+        const nextIndex = nextSeats.length > 0 ? nextSeats[0] : occupiedSeats[0];
+
+        await setDealerSeat(nextIndex);
+    };
+
+    // === Turn-based Betting System ===
+
+    const [currentTurnSeatIndex, setCurrentTurnSeatIndex] = useState<number>(-1);
+    const [currentHighestBet, setCurrentHighestBet] = useState<number>(0);
+    const [bettingRoundComplete, setBettingRoundComplete] = useState<boolean>(false);
+
+    // Start a new betting round
+    const startBettingRound = async () => {
+        if (!roomId || !isHost) return;
+
+        // Find first non-folded player clockwise from dealer
+        const activePlayers = players
+            .filter(p => p.seatIndex >= 0 && !p.isFolded)
+            .sort((a, b) => a.seatIndex - b.seatIndex);
+
+        if (activePlayers.length === 0) return;
+
+        // Start from player left of dealer (clockwise)
+        const dealerPos = activePlayers.findIndex(p => p.seatIndex === dealerIndex);
+        const firstPlayerIndex = dealerPos >= 0
+            ? activePlayers[(dealerPos + 1) % activePlayers.length].seatIndex
+            : activePlayers[0].seatIndex;
+
+        // Reset all players' action status
+        await supabase
+            .from('players')
+            .update({
+                has_acted_this_round: false,
+                player_action: null
+            })
+            .eq('room_id', roomId);
+
+        // Update room state
+        await supabase
+            .from('rooms')
+            .update({
+                current_turn_seat_index: firstPlayerIndex,
+                current_highest_bet: 0,
+                betting_round_complete: false
+            })
+            .eq('id', roomId);
+    };
+
+    // Move to next player
+    const moveToNextPlayer = async () => {
+        if (!roomId) return;
+
+        // CRITICAL: Fetch fresh data from DB to avoid race conditions
+        const { data: freshPlayers, error: playersError } = await supabase
+            .from('players')
+            .select('*')
+            .eq('room_id', roomId);
+
+        if (playersError || !freshPlayers) {
+            console.error('Failed to fetch players:', playersError);
+            return;
+        }
+
+        const { data: roomData, error: roomError } = await supabase
+            .from('rooms')
+            .select('current_highest_bet')
+            .eq('id', roomId)
+            .single();
+
+        if (roomError || !roomData) {
+            console.error('Failed to fetch room:', roomError);
+            return;
+        }
+
+        const freshHighestBet = roomData.current_highest_bet || 0;
+
+        const activePlayers = freshPlayers
+            .filter(p => p.seat_index >= 0 && !p.is_folded)
+            .sort((a, b) => a.seat_index - b.seat_index);
+
+        if (activePlayers.length === 0) return;
+
+        // Find current player position
+        const currentPos = activePlayers.findIndex(p => p.seat_index === currentTurnSeatIndex);
+        if (currentPos === -1) return;
+
+        // Check if betting round is complete with FRESH data
+        const allActed = activePlayers.every(p => p.has_acted_this_round);
+        const allBetsEqual = activePlayers.every(p => p.current_bet === freshHighestBet || p.is_folded);
+
+        console.log('🔍 Betting Round Check:', {
+            allActed,
+            allBetsEqual,
+            players: activePlayers.map(p => ({
+                seatIndex: p.seat_index,
+                currentBet: p.current_bet,
+                hasActed: p.has_acted_this_round,
+                isFolded: p.is_folded
+            })),
+            highestBet: freshHighestBet
+        });
+
+        if (allActed && allBetsEqual) {
+            console.log('✅ Betting round complete!');
+            // Betting round complete
+            await supabase
+                .from('rooms')
+                .update({
+                    betting_round_complete: true,
+                    current_turn_seat_index: -1  // Reset turn
+                })
+                .eq('id', roomId);
+        } else {
+            // Move to next player
+            const nextPlayer = activePlayers[(currentPos + 1) % activePlayers.length];
+            console.log('➡️ Moving to next player:', nextPlayer.seat_index);
+            await supabase
+                .from('rooms')
+                .update({ current_turn_seat_index: nextPlayer.seat_index })
+                .eq('id', roomId);
+        }
+    };
+
+    // Player Actions
+
+    // Fold
+    const playerFold = async (playerId: string) => {
+        if (!roomId) return;
+
+        await supabase
+            .from('players')
+            .update({
+                is_folded: true,
+                player_action: 'fold',
+                has_acted_this_round: true,
+                staged_bet: 0  // Clear staged chips
+            })
+            .eq('user_id', playerId)  // Use user_id, not id
+            .eq('room_id', roomId);
+
+        await moveToNextPlayer();
+    };
+
+    // Check
+    const playerCheck = async (playerId: string) => {
+        if (!roomId) return;
+
+        await supabase
+            .from('players')
+            .update({
+                player_action: 'check',
+                has_acted_this_round: true,
+                staged_bet: 0  // Clear staged chips
+            })
+            .eq('user_id', playerId)  // Use user_id, not id
+            .eq('room_id', roomId);
+
+        await moveToNextPlayer();
+    };
+
+    // Call
+    const playerCall = async (playerId: string) => {
+        if (!roomId) return;
+
+        // Fetch fresh player data from DB
+        const { data: freshPlayer, error } = await supabase
+            .from('players')
+            .select('*')
+            .eq('user_id', playerId)  // Use user_id, not id
+            .eq('room_id', roomId)
+            .single();
+
+        if (error || !freshPlayer) {
+            console.error('Failed to fetch player:', error);
+            return;
+        }
+
+        // Fetch fresh highest bet
+        const { data: roomData } = await supabase
+            .from('rooms')
+            .select('current_highest_bet')
+            .eq('id', roomId)
+            .single();
+
+        const freshHighestBet = roomData?.current_highest_bet || 0;
+
+        // Calculate how much to deduct
+        const amountToDeduct = freshHighestBet - freshPlayer.current_bet;
+        if (amountToDeduct <= 0) return;
+        if (freshPlayer.balance < amountToDeduct) {
+            console.warn('Insufficient balance');
+            return;
+        }
+
+        console.log('💰 Call:', {
+            playerId,
+            currentBet: freshPlayer.current_bet,
+            highestBet: freshHighestBet,
+            toDeduct: amountToDeduct,
+            newBalance: freshPlayer.balance - amountToDeduct
+        });
+
+        await supabase
+            .from('players')
+            .update({
+                balance: freshPlayer.balance - amountToDeduct,
+                current_bet: freshHighestBet,
+                player_action: 'call',
+                has_acted_this_round: true,
+                staged_bet: 0
+            })
+            .eq('id', freshPlayer.id);  // Use actual uuid id for update
+
+        await moveToNextPlayer();
+    };
+
+    // Bet/Raise
+    const playerBetRaise = async (playerId: string, amount: number) => {
+        if (!roomId) return;
+
+        // Fetch fresh player data from DB
+        const { data: freshPlayer, error } = await supabase
+            .from('players')
+            .select('*')
+            .eq('user_id', playerId)  // Use user_id, not id
+            .eq('room_id', roomId)
+            .single();
+
+        if (error || !freshPlayer) {
+            console.error('Failed to fetch player:', error);
+            return;
+        }
+
+        // Fetch fresh highest bet
+        const { data: roomData } = await supabase
+            .from('rooms')
+            .select('current_highest_bet')
+            .eq('id', roomId)
+            .single();
+
+        const freshHighestBet = roomData?.current_highest_bet || 0;
+
+        // Calculate how much to deduct from balance
+        const amountToDeduct = amount - freshPlayer.current_bet;
+        if (amountToDeduct <= 0) return;
+        if (freshPlayer.balance < amountToDeduct) {
+            console.warn('Insufficient balance');
+            return;
+        }
+
+        const action = freshHighestBet > 0 ? 'raise' : 'bet';
+        const isActualRaise = amount > freshHighestBet;
+
+        console.log('💰 Bet/Raise:', {
+            playerId,
+            currentBet: freshPlayer.current_bet,
+            newBet: amount,
+            toDeduct: amountToDeduct,
+            newBalance: freshPlayer.balance - amountToDeduct,
+            isActualRaise
+        });
+
+        // Update player - deduct balance and set bet
+        await supabase
+            .from('players')
+            .update({
+                balance: freshPlayer.balance - amountToDeduct,
+                current_bet: amount,
+                player_action: action,
+                has_acted_this_round: true,
+                staged_bet: 0
+            })
+            .eq('id', freshPlayer.id);  // Use actual uuid id for update
+
+        // Only reset other players if this is an actual raise (new higher bet)
+        if (isActualRaise) {
+            await supabase
+                .from('players')
+                .update({ has_acted_this_round: false })
+                .eq('room_id', roomId)
+                .neq('id', freshPlayer.id)
+                .neq('is_folded', true);
+        }
+
+        // Update highest bet
+        await supabase
+            .from('rooms')
+            .update({ current_highest_bet: amount })
+            .eq('id', roomId);
+
+        await moveToNextPlayer();
+    };
+
     return {
         roomId,
         isHost,
@@ -614,6 +965,9 @@ export const usePokerRoom = () => {
         pot,
         gameStatus,
         dealerIndex,
+        currentTurnSeatIndex,
+        currentHighestBet,
+        bettingRoundComplete,
         createRoom,
         joinRoom,
         leaveRoom,
@@ -628,5 +982,11 @@ export const usePokerRoom = () => {
         distributePot,
         updateGameStatus,
         setDealerSeat,
+        moveButtonToNext,
+        startBettingRound,
+        playerFold,
+        playerCheck,
+        playerCall,
+        playerBetRaise,
     };
 };

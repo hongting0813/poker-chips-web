@@ -7,7 +7,7 @@ import Chip from '@/components/Chip';
 import DraggableChip from '@/components/DraggableChip';
 import ChipStack from '@/components/ChipStack';
 import JoinRoom from '@/components/JoinRoom';
-import DealerJoin from '@/components/DealerJoin';
+import HostJoin from '@/components/HostJoin';
 import { usePokerRoom, BetPayload } from '@/hooks/usePokerRoom';
 import { CHIP_VALUES } from '@/constants/chips'; // Use shared constants
 
@@ -28,7 +28,7 @@ interface FlyingChip {
 
 export default function Home() {
     const [view, setView] = useState<ViewMode>('dealer');
-    const [dealerMode, setDealerMode] = useState<'menu' | 'join'>('menu');
+    const [hostMode, setHostMode] = useState<'menu' | 'join'>('menu');
     const [setupStep, setSetupStep] = useState(1);
     const [flyingChips, setFlyingChips] = useState<FlyingChip[]>([]);
     const [incomingBets, setIncomingBets] = useState<Record<string, number>>({});
@@ -73,19 +73,28 @@ export default function Home() {
         checkRoom,
         gameStatus,
         dealerIndex,
+        currentTurnSeatIndex,
+        currentHighestBet,
+        bettingRoundComplete,
         collectBets,
         distributePot,
         updateGameStatus,
         setDealerSeat,
+        moveButtonToNext,
+        startBettingRound,
+        playerFold,
+        playerCheck,
+        playerCall,
+        playerBetRaise,
     } = usePokerRoom();
 
     // Handle Browser Back Button
     useEffect(() => {
         const handlePopState = (event: PopStateEvent) => {
             leaveRoom();
-            setView('dealer'); // Return to dealer view on back
+            setView('dealer'); // Return to host view on back
             setSetupStep(1);   // Reset setup step
-            setDealerMode('menu'); // Reset dealer mode
+            setHostMode('menu'); // Reset host mode
         };
 
         window.addEventListener('popstate', handlePopState);
@@ -99,12 +108,23 @@ export default function Home() {
             leaveRoom();
             setView('dealer');
             setSetupStep(1);   // Reset setup step
-            setDealerMode('menu'); // Reset dealer mode
+            setHostMode('menu'); // Reset host mode
         }
     };
 
     // Find myself
     const myPlayer = players.find(p => p.id === myPlayerId);
+
+    // Turn-based betting logic
+    const isMyTurn = myPlayer && myPlayer.seatIndex === currentTurnSeatIndex;
+    const canCheck = currentHighestBet === 0 || (myPlayer && myPlayer.currentBet === currentHighestBet);
+    const needToCall = currentHighestBet > 0 && myPlayer && myPlayer.currentBet < currentHighestBet;
+    const amountToCall = needToCall ? currentHighestBet - (myPlayer?.currentBet || 0) : 0;
+
+    // Reset stagedAmount when room or player changes
+    useEffect(() => {
+        setStagedAmount(0);
+    }, [roomId, myPlayerId]);
 
     // Sync stagedBetSums with DB source of truth to handle eventual consistency
     useEffect(() => {
@@ -323,13 +343,13 @@ export default function Home() {
             <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white/10 to-transparent opacity-30 mix-blend-overlay"></div>
 
             {/* Dev Mode View Toggle - Hidden when connected or in setup screens */}
-            {status !== 'connected' && dealerMode !== 'join' && setupStep === 1 && (
+            {status !== 'connected' && hostMode !== 'join' && setupStep === 1 && (
                 <div className="fixed top-4 right-4 md:top-6 md:right-6 z-50 flex gap-2 bg-black/40 p-1 rounded-full backdrop-blur-sm border border-white/10">
                     <button
                         onClick={() => setView('dealer')}
                         className={`px-4 py-2 rounded-full text-xs font-bold tracking-widest transition-all ${view === 'dealer' ? 'bg-white text-green-950 shadow-lg' : 'text-white/70 hover:text-white'}`}
                     >
-                        DEALER
+                        HOST
                     </button>
                     <button
                         onClick={() => setView('player')}
@@ -382,16 +402,16 @@ export default function Home() {
                 <div className="flex flex-col items-center z-10 w-full max-w-7xl relative h-full justify-center origin-center transition-transform duration-300 p-4">
 
                     {!roomId ? (
-                        dealerMode === 'join' ? (
-                            <DealerJoin
+                        hostMode === 'join' ? (
+                            <HostJoin
                                 onResume={async (id) => {
                                     const success = await resumeHost(id);
                                     if (success) {
                                         window.history.pushState({ room: 'host' }, '');
-                                        setDealerMode('menu');
+                                        setHostMode('menu');
                                     }
                                 }}
-                                onBack={() => setDealerMode('menu')}
+                                onBack={() => setHostMode('menu')}
                             />
                         ) : (
                             <div className="flex flex-col items-center scale-75 md:scale-100">
@@ -409,7 +429,7 @@ export default function Home() {
                                         CREATE TABLE
                                     </button>
                                     <button
-                                        onClick={() => setDealerMode('join')}
+                                        onClick={() => setHostMode('join')}
                                         className="w-full px-8 py-4 bg-white/10 hover:bg-white/20 text-white font-bold text-xl rounded-full shadow-lg transition-all transform hover:scale-105 active:scale-95 border-2 border-white/10 text-center"
                                     >
                                         RESUME TABLE
@@ -472,18 +492,21 @@ export default function Home() {
                                         className="absolute top-1/2 left-1/2 w-20 h-20 md:w-32 md:h-32 flex flex-col items-center justify-center transition-all duration-500 z-20"
                                         style={getSeatStyle(seatIndex)}
                                         onClick={() => {
-                                            if (isHost) {
-                                                if (gameStatus === 'showdown' && player) {
-                                                    distributePot(player.id);
-                                                } else {
-                                                    setDealerSeat(seatIndex);
-                                                }
+                                            if (!isHost) return;
+
+                                            if (gameStatus === 'showdown' && player) {
+                                                // Showdown: 選擇贏家並分配獎池
+                                                distributePot(player.id);
+                                            } else if (gameStatus !== 'showdown') {
+                                                // 非 Showdown: 設定 Dealer Button
+                                                setDealerSeat(seatIndex);
                                             }
                                         }}
                                     >
                                         {/* Seat Visual (Empty) */}
                                         <div className={`w-14 h-14 md:w-24 md:h-24 rounded-full border-2 md:border-4 flex items-center justify-center text-xl md:text-4xl relative shadow-[0_10px_20px_rgba(0,0,0,0.5)] transition-all cursor-pointer group
                              ${player ? 'border-yellow-500 text-white scale-110' : 'bg-white/5 border-white/10 text-white/10 border-dashed hover:bg-white/10'}
+                             ${seatIndex === currentTurnSeatIndex ? 'ring-4 ring-yellow-400 animate-pulse' : ''}
                           `}
                                             style={player ? { backgroundColor: player.color || 'rgba(0,0,0,0.8)' } : {}}
                                         >
@@ -524,12 +547,15 @@ export default function Home() {
                                 );
                             })}
 
-                            {/* Staged Bets (Middle Ring) */}
+                            {/* Staged Bets (Middle Ring) - Now also shows currentBet chips */}
                             {players.map((p) => {
                                 const incoming = incomingBets[p.id] || 0;
-                                // Use local sum which handles latency, or fallback to DB if local is missing
-                                const baseAmount = stagedBetSums[p.id] || p.stagedBet || 0;
-                                const displayAmount = Math.max(0, baseAmount - incoming);
+                                const stagedAmount = stagedBetSums[p.id] || p.stagedBet || 0;
+
+                                // Priority: show currentBet chips if confirmed, otherwise show stagedBet chips
+                                const displayAmount = p.currentBet > 0
+                                    ? p.currentBet
+                                    : Math.max(0, stagedAmount - incoming);
 
                                 return displayAmount > 0 && (
                                     <div
@@ -544,47 +570,72 @@ export default function Home() {
                                 );
                             })}
 
-                            {/* Dealer Controls Footer */}
+                            {/* Host Controls - Right Top Corner */}
                             {isHost && (
-                                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-black/80 p-2 rounded-full border border-white/10 backdrop-blur-xl shadow-2xl scale-90 md:scale-100">
-                                    <div className="px-4 py-1 border-r border-white/10">
-                                        <span className="text-[10px] text-white/30 uppercase tracking-widest block leading-none mb-1">Status</span>
-                                        <span className="text-yellow-400 font-bold text-xs uppercase">{gameStatus}</span>
-                                    </div>
-
-                                    <button
-                                        onClick={() => {
-                                            const stages: any[] = ['waiting', 'pre-flop', 'flop', 'turn', 'river', 'showdown'];
-                                            const idx = stages.indexOf(gameStatus);
-                                            const next = stages[(idx + 1) % stages.length];
-                                            updateGameStatus(next);
-                                        }}
-                                        className="px-4 py-2 rounded-full text-[10px] font-bold bg-white/10 text-white hover:bg-white/20 transition-all flex items-center gap-2 group"
-                                    >
-                                        NEXT STAGE
-                                        <span className="opacity-50 group-hover:translate-x-1 transition-transform">→</span>
-                                    </button>
-
-                                    <button
-                                        onClick={collectBets}
-                                        disabled={pot > 0 && players.every(p => p.currentBet === 0)}
-                                        className="px-6 py-2 rounded-full text-[10px] font-bold bg-yellow-500 text-black hover:bg-yellow-400 transition-all shadow-lg active:scale-95 disabled:opacity-50"
-                                    >
-                                        COLLECT BETS
-                                    </button>
-
-                                    {gameStatus === 'showdown' && (
-                                        <div className="px-4 py-2 rounded-full text-[10px] font-bold bg-green-500 text-white animate-pulse">
-                                            SELECT WINNER ↓
+                                <div className="fixed top-20 right-4 md:top-24 md:right-6 z-40 w-[200px] md:w-[220px]">
+                                    <div className="bg-green-800/50 backdrop-blur-sm border-4 border-white/10 rounded-[30px] shadow-inner px-4 py-4 flex flex-col items-center gap-2.5">
+                                        {/* Current Status */}
+                                        <div className="text-white/30 font-bold text-[10px] tracking-widest uppercase">
+                                            {gameStatus}
                                         </div>
-                                    )}
 
-                                    <button
-                                        onClick={() => updateGameStatus('waiting')}
-                                        className="px-4 py-2 rounded-full text-[10px] font-bold bg-red-900/40 text-red-200 hover:bg-red-900/60 border border-red-500/20 transition-all"
-                                    >
-                                        RESET
-                                    </button>
+                                        {/* Control Buttons - Vertical Stack */}
+                                        <div className="flex flex-col gap-2 w-full">
+                                            {/* Next Stage */}
+                                            <button
+                                                onClick={() => {
+                                                    const stages: ('waiting' | 'pre-flop' | 'flop' | 'turn' | 'river' | 'showdown')[] = ['waiting', 'pre-flop', 'flop', 'turn', 'river', 'showdown'];
+                                                    const idx = stages.indexOf(gameStatus);
+                                                    const next = stages[(idx + 1) % stages.length];
+                                                    updateGameStatus(next);
+                                                    // Start betting round when entering pre-flop/flop/turn/river
+                                                    if (next !== 'waiting' && next !== 'showdown') {
+                                                        startBettingRound();
+                                                    }
+                                                }}
+                                                disabled={!bettingRoundComplete && gameStatus !== 'waiting' && gameStatus !== 'showdown'}
+                                                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-white/10 hover:bg-white/20 transition-all active:scale-95 w-full disabled:opacity-30 disabled:cursor-not-allowed"
+                                                title="Next Stage"
+                                            >
+                                                <span className="text-xl">→</span>
+                                                <span className="text-[10px] text-white/90 uppercase tracking-wide font-bold">Next Stage</span>
+                                            </button>
+
+                                            {/* Collect Bets */}
+                                            <button
+                                                onClick={collectBets}
+                                                disabled={pot > 0 && players.every(p => p.currentBet === 0)}
+                                                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-amber-600/60 hover:bg-amber-500/70 transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed w-full"
+                                                title="Collect Bets"
+                                            >
+                                                <span className="text-xl">💰</span>
+                                                <span className="text-[10px] text-white uppercase tracking-wide font-bold">Collect Bets</span>
+                                            </button>
+
+                                            {/* New Round */}
+                                            <button
+                                                onClick={() => {
+                                                    updateGameStatus('waiting');
+                                                    moveButtonToNext();
+                                                }}
+                                                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-emerald-600/60 hover:bg-emerald-500/70 transition-all active:scale-95 w-full"
+                                                title="New Round"
+                                            >
+                                                <span className="text-xl">🔄</span>
+                                                <span className="text-[10px] text-white uppercase tracking-wide font-bold">New Round</span>
+                                            </button>
+                                        </div>
+
+                                        {/* Hint Text */}
+                                        <div className="text-white/50 text-[10px] text-center leading-relaxed border-t border-white/10 pt-2.5 w-full">
+                                            {gameStatus === 'waiting' && '點擊 → 開始遊戲'}
+                                            {gameStatus === 'pre-flop' && '玩家下注後，點擊 💰'}
+                                            {gameStatus === 'flop' && '玩家下注後，點擊 💰'}
+                                            {gameStatus === 'turn' && '玩家下注後，點擊 💰'}
+                                            {gameStatus === 'river' && '玩家下注後，點擊 💰'}
+                                            {gameStatus === 'showdown' && '點擊玩家頭像選擇贏家'}
+                                        </div>
+                                    </div>
                                 </div>
                             )}
                         </div>
@@ -654,36 +705,124 @@ export default function Home() {
                                         </div>
                                     </div>
 
-                                    {/* Action Buttons - Moved Here */}
-                                    <div className={`w-full px-6 flex gap-3 transition-all duration-300 h-[50px] items-end ${stagedAmount > 0 ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
-                                        <button
-                                            onClick={handleClearBet}
-                                            disabled={stagedAmount === 0}
-                                            className="flex-1 bg-gray-700/80 hover:bg-gray-600 text-white/80 font-bold py-3 rounded-2xl border border-white/10 active:scale-95 transition-all uppercase tracking-widest text-xs h-full"
-                                        >
-                                            Clear
-                                        </button>
-                                        <button
-                                            onClick={handleConfirmBet}
-                                            disabled={stagedAmount === 0}
-                                            className="flex-[2.5] bg-gradient-to-br from-yellow-400 to-yellow-600 hover:from-yellow-300 hover:to-yellow-500 text-black font-black py-3 rounded-2xl border-b-4 border-yellow-800 active:border-b-0 active:translate-y-1 transition-all uppercase tracking-widest text-sm h-full"
-                                        >
-                                            CONFIRM BET
-                                        </button>
-                                    </div>
+                                    {/* Clear / CONFIRM BET Buttons - Only in 'waiting' mode */}
+                                    {gameStatus === 'waiting' && (
+                                        <div className={`w-full px-6 flex gap-3 transition-all duration-300 h-[50px] items-end ${stagedAmount > 0 ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
+                                            <button
+                                                onClick={handleClearBet}
+                                                disabled={stagedAmount === 0}
+                                                className="flex-1 bg-gray-700/80 hover:bg-gray-600 text-white/80 font-bold py-3 rounded-2xl border border-white/10 active:scale-95 transition-all uppercase tracking-widest text-xs h-full flex flex-col items-center justify-center leading-tight"
+                                            >
+                                                <span>Clear</span>
+                                                <span className="text-[10px] opacity-70 normal-case">清除</span>
+                                            </button>
+                                            <button
+                                                onClick={handleConfirmBet}
+                                                disabled={stagedAmount === 0}
+                                                className="flex-[2.5] bg-gradient-to-br from-yellow-400 to-yellow-600 hover:from-yellow-300 hover:to-yellow-500 text-black font-black py-3 rounded-2xl border-b-4 border-yellow-800 active:border-b-0 active:translate-y-1 transition-all uppercase tracking-widest text-sm h-full flex flex-col items-center justify-center leading-tight"
+                                            >
+                                                <span>CONFIRM BET</span>
+                                                <span className="text-xs opacity-80 normal-case">確認下注</span>
+                                            </button>
+                                        </div>
+                                    )}
 
 
                                 </div>
                             </div>
 
-                            {/* LOWER SECTION (50%) - Chips Only */}
+                            {/* LOWER SECTION (50%) - Chips and Action Buttons */}
                             <div className="flex-1 w-full flex flex-col min-h-0 relative justify-center">
-                                {/* Swipe Hint */}
+                                {/* Turn-based Action Buttons */}
+                                {view === 'player' && gameStatus !== 'waiting' && (
+                                    <div className="absolute top-4 left-0 w-full px-4 z-20">
+                                        {isMyTurn ? (
+                                            <div className="flex gap-2 justify-center animate-fade-in">
+                                                {/* Fold Button */}
+                                                <button
+                                                    onClick={() => {
+                                                        playerFold(myPlayerId);
+                                                        setStagedAmount(0);  // Clear staged amount
+                                                    }}
+                                                    className="px-3 py-2 bg-red-600/80 hover:bg-red-500 text-white font-bold rounded-xl text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-white/20 flex flex-col items-center leading-tight"
+                                                >
+                                                    <span>Fold</span>
+                                                    <span className="text-[8px] opacity-80">棄牌</span>
+                                                </button>
+
+                                                {/* Check Button - only if no bet or already matched */}
+                                                {canCheck && (
+                                                    <button
+                                                        onClick={() => {
+                                                            playerCheck(myPlayerId);
+                                                            setStagedAmount(0);  // Clear staged amount
+                                                        }}
+                                                        className="px-3 py-2 bg-blue-600/80 hover:bg-blue-500 text-white font-bold rounded-xl text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-white/20 flex flex-col items-center leading-tight"
+                                                    >
+                                                        <span>Check</span>
+                                                        <span className="text-[8px] opacity-80">過牌</span>
+                                                    </button>
+                                                )}
+
+                                                {/* Call Button - only if need to match bet */}
+                                                {needToCall && (
+                                                    <button
+                                                        onClick={() => {
+                                                            playerCall(myPlayerId);
+                                                            setStagedAmount(0);  // Clear staged amount
+                                                        }}
+                                                        className="px-3 py-2 bg-emerald-600/80 hover:bg-emerald-500 text-white font-bold rounded-xl text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-white/20 flex flex-col items-center leading-tight"
+                                                    >
+                                                        <span>Call ${amountToCall}</span>
+                                                        <span className="text-[8px] opacity-80">跟注</span>
+                                                    </button>
+                                                )}
+
+                                                {/* Bet/Raise Button - use staged chips */}
+                                                <button
+                                                    onClick={() => {
+                                                        if (stagedAmount > currentHighestBet) {
+                                                            playerBetRaise(myPlayerId, stagedAmount);
+                                                            setStagedAmount(0);
+                                                        }
+                                                    }}
+                                                    disabled={stagedAmount === 0 || stagedAmount <= currentHighestBet}
+                                                    className="px-3 py-2 bg-yellow-600/80 hover:bg-yellow-500 text-white font-bold rounded-xl text-[10px] uppercase tracking-wide transition-all active:scale-95 border border-white/20 disabled:opacity-30 disabled:cursor-not-allowed flex flex-col items-center leading-tight"
+                                                >
+                                                    <span>{currentHighestBet > 0 ? 'Raise' : 'Bet'}</span>
+                                                    <span className="text-[8px] opacity-80">{currentHighestBet > 0 ? '加注' : '下注'}</span>
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <div className="text-center py-2">
+                                                <div className="inline-block bg-black/60 px-6 py-2 rounded-full backdrop-blur-sm border border-white/10">
+                                                    <span className="text-white/50 text-xs uppercase tracking-widest">
+                                                        等待其他玩家行動...
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Swipe Hint - Context-aware */}
                                 <div className="absolute top-2 left-0 w-full flex items-center justify-center opacity-50 z-10 pointer-events-none">
-                                    <p className="text-white/30 text-[10px] text-center animate-pulse tracking-[0.3em] uppercase flex flex-col items-center gap-1">
-                                        <span className="text-lg">↑</span>
-                                        Swipe UP
-                                    </p>
+                                    {gameStatus === 'waiting' ? (
+                                        <p className="text-white/30 text-[10px] text-center animate-pulse tracking-[0.3em] uppercase flex flex-col items-center gap-1">
+                                            <span className="text-lg">↑</span>
+                                            Swipe UP to Stage
+                                        </p>
+                                    ) : isMyTurn && stagedAmount === 0 ? (
+                                        <p className="text-yellow-400/50 text-[10px] text-center animate-pulse tracking-[0.2em] uppercase flex flex-col items-center gap-1">
+                                            <span className="text-lg">👆</span>
+                                            Your Turn - Choose Action
+                                        </p>
+                                    ) : isMyTurn && stagedAmount > 0 ? (
+                                        <p className="text-yellow-400/50 text-[10px] text-center animate-pulse tracking-[0.2em] uppercase flex flex-col items-center gap-1">
+                                            <span className="text-lg">✓</span>
+                                            Click Bet/Raise Below
+                                        </p>
+                                    ) : null}
                                 </div>
 
 

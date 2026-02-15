@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 
-interface DealerJoinProps {
+interface HostJoinProps {
     onResume: (roomId: string) => void;
     onBack: () => void;
 }
 
-const DealerJoin: React.FC<DealerJoinProps> = ({ onResume, onBack }) => {
+const HostJoin: React.FC<HostJoinProps> = ({ onResume, onBack }) => {
     const [roomId, setRoomId] = useState('');
 
     const handleResume = () => {
@@ -55,4 +55,4 @@ const DealerJoin: React.FC<DealerJoinProps> = ({ onResume, onBack }) => {
     );
 };
 
-export default DealerJoin;
+export default HostJoin;
