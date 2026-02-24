@@ -8,7 +8,7 @@ const AVATARS = ['👨🏻', '👩🏻', '👴🏻', '👵🏻', '🧑🏻', '�
 const COLORS = ['#000000', '#2f4a4a', '#4a0404', '#042f4a', '#044a04', '#4a044a', '#4a2f04', '#F1F3F5', '#FFC9C9', '#A5D8FF', '#B2F2BB', '#D0BFFF'];
 
 interface JoinRoomProps {
-    onJoin: (roomId: string, name: string, seatIndex: number, avatar: string, buyIn: number, color: string) => void;
+    onJoin: (roomId: string, name: string, seatIndex: number, avatar: string, buyIn: number, color: string) => Promise<boolean>;
     onStepChange?: (step: number) => void;
 }
 
@@ -67,9 +67,17 @@ const JoinRoom: React.FC<JoinRoomProps & {
         }
     };
 
-    const handleJoin = () => {
+    const handleJoin = async () => {
         if (roomId.trim() && name.trim() && seatIndex !== null && !nameError && isBuyInValid) {
-            onJoin(roomId, name, seatIndex, avatar, Number(buyIn), color);
+            const success = await onJoin(roomId, name, seatIndex, avatar, Number(buyIn), color);
+
+            // If join failed (seat taken), refresh room state
+            if (success === false) {
+                setSeatIndex(null);  // Clear selection
+                const { occupiedSeats: seats, takenNames: names } = await checkRoom(roomId);
+                setOccupiedSeats(seats || []);
+                setTakenNames(names || []);
+            }
         }
     };
 

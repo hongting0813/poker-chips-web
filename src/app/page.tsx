@@ -38,6 +38,7 @@ export default function Home() {
 
     // Staged Betting State
     const [stagedAmount, setStagedAmount] = useState(0);
+    const [isControlsCollapsed, setIsControlsCollapsed] = useState(false);
 
     // Responsive Window Size
     const [windowSize, setWindowSize] = useState({ width: 0, height: 0 });
@@ -495,7 +496,11 @@ export default function Home() {
                                             if (!isHost) return;
 
                                             if (gameStatus === 'showdown' && player) {
-                                                // Showdown: 選擇贏家並分配獎池
+                                                // Showdown: 只有未棄牌的玩家才能獲得獎金
+                                                if (player.isFolded) {
+                                                    alert('此玩家已棄牌，無法獲得獎金');
+                                                    return;
+                                                }
                                                 distributePot(player.id);
                                             } else if (gameStatus !== 'showdown') {
                                                 // 非 Showdown: 設定 Dealer Button
@@ -572,69 +577,82 @@ export default function Home() {
 
                             {/* Host Controls - Right Top Corner */}
                             {isHost && (
-                                <div className="fixed top-20 right-4 md:top-24 md:right-6 z-40 w-[200px] md:w-[220px]">
-                                    <div className="bg-green-800/50 backdrop-blur-sm border-4 border-white/10 rounded-[30px] shadow-inner px-4 py-4 flex flex-col items-center gap-2.5">
-                                        {/* Current Status */}
-                                        <div className="text-white/30 font-bold text-[10px] tracking-widest uppercase">
-                                            {gameStatus}
-                                        </div>
+                                <div className={`fixed top-20 right-4 md:top-24 md:right-6 z-40 transition-all duration-300 ${isControlsCollapsed ? 'w-10' : 'w-[200px] md:w-[220px]'}`}>
+                                    <div className={`bg-green-800/80 backdrop-blur-md border border-white/20 rounded-2xl shadow-xl flex flex-col items-center overflow-hidden transition-all duration-300 ${isControlsCollapsed ? 'p-1' : 'p-4 gap-2.5'}`}>
+                                        {/* Toggle Button */}
+                                        <button
+                                            onClick={() => setIsControlsCollapsed(!isControlsCollapsed)}
+                                            className={`flex items-center justify-center transition-all ${isControlsCollapsed ? 'w-8 h-8 hover:bg-white/10 rounded-full' : 'absolute top-2 right-2 w-6 h-6 text-white/40 hover:text-white/80 hover:bg-white/10 rounded-full z-10'}`}
+                                            title={isControlsCollapsed ? "展開控制面板" : "收起控制面板"}
+                                        >
+                                            {isControlsCollapsed ? '⚙️' : '✕'}
+                                        </button>
 
-                                        {/* Control Buttons - Vertical Stack */}
-                                        <div className="flex flex-col gap-2 w-full">
-                                            {/* Next Stage */}
-                                            <button
-                                                onClick={() => {
-                                                    const stages: ('waiting' | 'pre-flop' | 'flop' | 'turn' | 'river' | 'showdown')[] = ['waiting', 'pre-flop', 'flop', 'turn', 'river', 'showdown'];
-                                                    const idx = stages.indexOf(gameStatus);
-                                                    const next = stages[(idx + 1) % stages.length];
-                                                    updateGameStatus(next);
-                                                    // Start betting round when entering pre-flop/flop/turn/river
-                                                    if (next !== 'waiting' && next !== 'showdown') {
-                                                        startBettingRound();
-                                                    }
-                                                }}
-                                                disabled={!bettingRoundComplete && gameStatus !== 'waiting' && gameStatus !== 'showdown'}
-                                                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-white/10 hover:bg-white/20 transition-all active:scale-95 w-full disabled:opacity-30 disabled:cursor-not-allowed"
-                                                title="Next Stage"
-                                            >
-                                                <span className="text-xl">→</span>
-                                                <span className="text-[10px] text-white/90 uppercase tracking-wide font-bold">Next Stage</span>
-                                            </button>
+                                        {!isControlsCollapsed && (
+                                            <>
+                                                {/* Current Status */}
+                                                <div className="text-white/40 font-bold text-[9px] tracking-[0.2em] uppercase text-center w-full px-2 border-b border-white/5 pb-2 mb-1">
+                                                    Host Dashboard: <span className="text-emerald-400">{gameStatus}</span>
+                                                </div>
 
-                                            {/* Collect Bets */}
-                                            <button
-                                                onClick={collectBets}
-                                                disabled={pot > 0 && players.every(p => p.currentBet === 0)}
-                                                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-amber-600/60 hover:bg-amber-500/70 transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed w-full"
-                                                title="Collect Bets"
-                                            >
-                                                <span className="text-xl">💰</span>
-                                                <span className="text-[10px] text-white uppercase tracking-wide font-bold">Collect Bets</span>
-                                            </button>
+                                                {/* Control Buttons - Vertical Stack */}
+                                                <div className="flex flex-col gap-2 w-full">
+                                                    {/* Next Stage */}
+                                                    <button
+                                                        onClick={() => {
+                                                            const stages: ('waiting' | 'pre-flop' | 'flop' | 'turn' | 'river' | 'showdown')[] = ['waiting', 'pre-flop', 'flop', 'turn', 'river', 'showdown'];
+                                                            const idx = stages.indexOf(gameStatus);
+                                                            const next = stages[(idx + 1) % stages.length];
+                                                            updateGameStatus(next);
+                                                            // Start betting round when entering pre-flop/flop/turn/river
+                                                            if (next !== 'waiting' && next !== 'showdown') {
+                                                                startBettingRound();
+                                                            }
+                                                        }}
+                                                        disabled={!bettingRoundComplete && gameStatus !== 'waiting' && gameStatus !== 'showdown'}
+                                                        className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/5 transition-all active:scale-95 w-full disabled:opacity-20 disabled:cursor-not-allowed group"
+                                                        title="Next Stage"
+                                                    >
+                                                        <span className="text-lg group-hover:translate-x-0.5 transition-transform">→</span>
+                                                        <span className="text-[10px] text-white/90 uppercase tracking-wide font-bold">Next Stage</span>
+                                                    </button>
 
-                                            {/* New Round */}
-                                            <button
-                                                onClick={() => {
-                                                    updateGameStatus('waiting');
-                                                    moveButtonToNext();
-                                                }}
-                                                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-emerald-600/60 hover:bg-emerald-500/70 transition-all active:scale-95 w-full"
-                                                title="New Round"
-                                            >
-                                                <span className="text-xl">🔄</span>
-                                                <span className="text-[10px] text-white uppercase tracking-wide font-bold">New Round</span>
-                                            </button>
-                                        </div>
+                                                    {/* Collect Bets */}
+                                                    <button
+                                                        onClick={collectBets}
+                                                        disabled={pot > 0 && players.every(p => p.currentBet === 0)}
+                                                        className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-amber-600/60 hover:bg-amber-500/70 border border-white/10 transition-all active:scale-95 disabled:opacity-20 disabled:cursor-not-allowed w-full"
+                                                        title="Collect Bets"
+                                                    >
+                                                        <span className="text-lg">💰</span>
+                                                        <span className="text-[10px] text-white uppercase tracking-wide font-bold">Collect Bets</span>
+                                                    </button>
 
-                                        {/* Hint Text */}
-                                        <div className="text-white/50 text-[10px] text-center leading-relaxed border-t border-white/10 pt-2.5 w-full">
-                                            {gameStatus === 'waiting' && '點擊 → 開始遊戲'}
-                                            {gameStatus === 'pre-flop' && '玩家下注後，點擊 💰'}
-                                            {gameStatus === 'flop' && '玩家下注後，點擊 💰'}
-                                            {gameStatus === 'turn' && '玩家下注後，點擊 💰'}
-                                            {gameStatus === 'river' && '玩家下注後，點擊 💰'}
-                                            {gameStatus === 'showdown' && '點擊玩家頭像選擇贏家'}
-                                        </div>
+                                                    {/* New Round */}
+                                                    <button
+                                                        onClick={() => {
+                                                            updateGameStatus('waiting');
+                                                            moveButtonToNext();
+                                                        }}
+                                                        className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600/60 hover:bg-emerald-500/70 border border-white/10 transition-all active:scale-95 w-full"
+                                                        title="New Round"
+                                                    >
+                                                        <span className="text-lg">🔄</span>
+                                                        <span className="text-[10px] text-white uppercase tracking-wide font-bold">New Round</span>
+                                                    </button>
+                                                </div>
+
+                                                {/* Hint Text */}
+                                                <div className="text-white/40 text-[9px] text-center leading-relaxed border-t border-white/5 pt-2 w-full mt-1">
+                                                    {gameStatus === 'waiting' && '點擊 → 開始遊戲'}
+                                                    {gameStatus === 'pre-flop' && '下注後，點擊 💰'}
+                                                    {gameStatus === 'flop' && '下注後，點擊 💰'}
+                                                    {gameStatus === 'turn' && '下注後，點擊 💰'}
+                                                    {gameStatus === 'river' && '下注後，點擊 💰'}
+                                                    {gameStatus === 'showdown' && '選擇贏家以分配獎池'}
+                                                </div>
+                                            </>
+                                        )}
                                     </div>
                                 </div>
                             )}
@@ -646,9 +664,12 @@ export default function Home() {
                 <div className="z-10 w-full max-w-5xl flex flex-col items-center h-full justify-center">
                     {!roomId || status !== 'connected' ? (
                         <JoinRoom
-                            onJoin={(id, name, seat, avatar, buyIn, color) => {
-                                joinRoom(id, name, seat, avatar, buyIn, color);
-                                window.history.pushState({ room: id }, '');
+                            onJoin={async (id, name, seat, avatar, buyIn, color) => {
+                                const success = await joinRoom(id, name, seat, avatar, buyIn, color);
+                                if (success) {
+                                    window.history.pushState({ room: id }, '');
+                                }
+                                return success;
                             }}
                             onStepChange={setSetupStep}
                             checkRoom={checkRoom}
@@ -705,28 +726,6 @@ export default function Home() {
                                         </div>
                                     </div>
 
-                                    {/* Clear / CONFIRM BET Buttons - Only in 'waiting' mode */}
-                                    {gameStatus === 'waiting' && (
-                                        <div className={`w-full px-6 flex gap-3 transition-all duration-300 h-[50px] items-end ${stagedAmount > 0 ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
-                                            <button
-                                                onClick={handleClearBet}
-                                                disabled={stagedAmount === 0}
-                                                className="flex-1 bg-gray-700/80 hover:bg-gray-600 text-white/80 font-bold py-3 rounded-2xl border border-white/10 active:scale-95 transition-all uppercase tracking-widest text-xs h-full flex flex-col items-center justify-center leading-tight"
-                                            >
-                                                <span>Clear</span>
-                                                <span className="text-[10px] opacity-70 normal-case">清除</span>
-                                            </button>
-                                            <button
-                                                onClick={handleConfirmBet}
-                                                disabled={stagedAmount === 0}
-                                                className="flex-[2.5] bg-gradient-to-br from-yellow-400 to-yellow-600 hover:from-yellow-300 hover:to-yellow-500 text-black font-black py-3 rounded-2xl border-b-4 border-yellow-800 active:border-b-0 active:translate-y-1 transition-all uppercase tracking-widest text-sm h-full flex flex-col items-center justify-center leading-tight"
-                                            >
-                                                <span>CONFIRM BET</span>
-                                                <span className="text-xs opacity-80 normal-case">確認下注</span>
-                                            </button>
-                                        </div>
-                                    )}
-
 
                                 </div>
                             </div>
@@ -736,7 +735,15 @@ export default function Home() {
                                 {/* Turn-based Action Buttons */}
                                 {view === 'player' && gameStatus !== 'waiting' && (
                                     <div className="absolute top-4 left-0 w-full px-4 z-20">
-                                        {isMyTurn ? (
+                                        {myPlayer?.isFolded ? (
+                                            <div className="text-center py-2">
+                                                <div className="inline-block bg-red-900/60 px-6 py-2 rounded-full backdrop-blur-sm border border-red-500/30">
+                                                    <span className="text-red-300 text-xs uppercase tracking-widest">
+                                                        已棄牌 (Folded)
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        ) : isMyTurn ? (
                                             <div className="flex gap-2 justify-center animate-fade-in">
                                                 {/* Fold Button */}
                                                 <button
@@ -807,17 +814,12 @@ export default function Home() {
 
                                 {/* Swipe Hint - Context-aware */}
                                 <div className="absolute top-2 left-0 w-full flex items-center justify-center opacity-50 z-10 pointer-events-none">
-                                    {gameStatus === 'waiting' ? (
-                                        <p className="text-white/30 text-[10px] text-center animate-pulse tracking-[0.3em] uppercase flex flex-col items-center gap-1">
-                                            <span className="text-lg">↑</span>
-                                            Swipe UP to Stage
-                                        </p>
-                                    ) : isMyTurn && stagedAmount === 0 ? (
+                                    {gameStatus !== 'waiting' && isMyTurn && stagedAmount === 0 ? (
                                         <p className="text-yellow-400/50 text-[10px] text-center animate-pulse tracking-[0.2em] uppercase flex flex-col items-center gap-1">
                                             <span className="text-lg">👆</span>
                                             Your Turn - Choose Action
                                         </p>
-                                    ) : isMyTurn && stagedAmount > 0 ? (
+                                    ) : gameStatus !== 'waiting' && isMyTurn && stagedAmount > 0 ? (
                                         <p className="text-yellow-400/50 text-[10px] text-center animate-pulse tracking-[0.2em] uppercase flex flex-col items-center gap-1">
                                             <span className="text-lg">✓</span>
                                             Click Bet/Raise Below
@@ -840,7 +842,8 @@ export default function Home() {
                         </div>
                     )}
                 </div>
-            )}
-        </main>
+            )
+            }
+        </main >
     );
 }

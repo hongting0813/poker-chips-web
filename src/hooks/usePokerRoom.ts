@@ -146,6 +146,10 @@ export const usePokerRoom = () => {
                     currentBet: row.current_bet,
                     stagedBet: row.staged_bet || 0,
                     color: row.color,
+                    // Turn-based betting fields
+                    playerAction: row.player_action,
+                    hasActedThisRound: row.has_acted_this_round,
+                    isFolded: row.is_folded,
                 };
             });
         };
@@ -333,7 +337,7 @@ export const usePokerRoom = () => {
     };
 
     // Join Room -> Insert Player Row
-    const joinRoom = async (id: string, name: string, seatIndex: number, avatar: string, buyIn: number, color: string) => {
+    const joinRoom = async (id: string, name: string, seatIndex: number, avatar: string, buyIn: number, color: string): Promise<boolean> => {
         setRoomId(id);
 
         // Check if I am already HOST in this room to prevent demotion
@@ -348,7 +352,20 @@ export const usePokerRoom = () => {
             console.log('User is already host, resuming as host...');
             setIsHost(true);
             connectToRoom(id);
-            return;
+            return true;
+        }
+
+        // CRITICAL: Check if seat is already taken by someone else (prevent race condition)
+        const { data: seatCheck } = await supabase
+            .from('players')
+            .select('user_id')
+            .eq('room_id', id)
+            .eq('seat_index', seatIndex);
+
+        if (seatCheck && seatCheck.length > 0 && seatCheck[0].user_id !== myPlayerId) {
+            console.error('Seat already taken by another player');
+            alert(`Seat ${seatIndex} is already taken! Please choose another seat.`);
+            return false;  // Return false to indicate failure
         }
 
         setIsHost(false);
@@ -373,11 +390,12 @@ export const usePokerRoom = () => {
 
         if (error) {
             console.error('Error joining room:', error);
-            alert('Failed to join room. Seat might be taken?');
-            return;
+            alert('Failed to join room. Please try again.');
+            return false;
         }
 
         connectToRoom(id);
+        return true;
     };
 
     // Stage Bet -> Update DB for visuals only
@@ -600,6 +618,13 @@ export const usePokerRoom = () => {
         const winner = players.find(p => p.id === winnerId);
         if (!winner) return;
 
+        // CRITICAL: Check if winner has folded (prevent accidental distribution)
+        if (winner.isFolded) {
+            console.error('Cannot distribute pot to folded player:', winnerId);
+            alert('此玩家已棄牌，無法獲得獎金');
+            return;
+        }
+
         // Add pot to winner balance
         const { error: pError } = await supabase
             .from('players')
@@ -678,27 +703,33 @@ export const usePokerRoom = () => {
     const startBettingRound = async () => {
         if (!roomId || !isHost) return;
 
-        // Find first non-folded player clockwise from dealer
-        const activePlayers = players
-            .filter(p => p.seatIndex >= 0 && !p.isFolded)
-            .sort((a, b) => a.seatIndex - b.seatIndex);
-
-        if (activePlayers.length === 0) return;
-
-        // Start from player left of dealer (clockwise)
-        const dealerPos = activePlayers.findIndex(p => p.seatIndex === dealerIndex);
-        const firstPlayerIndex = dealerPos >= 0
-            ? activePlayers[(dealerPos + 1) % activePlayers.length].seatIndex
-            : activePlayers[0].seatIndex;
-
-        // Reset all players' action status
+        // Reset all players' status for new betting round
         await supabase
             .from('players')
             .update({
                 has_acted_this_round: false,
-                player_action: null
+                player_action: null,
+                is_folded: false,  // CRITICAL: Reset fold status for new round
             })
             .eq('room_id', roomId);
+
+        // Find first player clockwise from dealer (using fresh data after reset)
+        const { data: freshPlayers } = await supabase
+            .from('players')
+            .select('*')
+            .eq('room_id', roomId);
+
+        const activePlayers = (freshPlayers || [])
+            .filter(p => p.seat_index >= 0)
+            .sort((a, b) => a.seat_index - b.seat_index);
+
+        if (activePlayers.length === 0) return;
+
+        // Start from player left of dealer (clockwise)
+        const dealerPos = activePlayers.findIndex(p => p.seat_index === dealerIndex);
+        const firstPlayerIndex = dealerPos >= 0
+            ? activePlayers[(dealerPos + 1) % activePlayers.length].seat_index
+            : activePlayers[0].seat_index;
 
         // Update room state
         await supabase
@@ -745,22 +776,35 @@ export const usePokerRoom = () => {
 
         if (activePlayers.length === 0) return;
 
+        // SPECIAL CASE: If only 1 player left (everyone else folded), they win immediately
+        if (activePlayers.length === 1) {
+            console.log('✅ Only 1 player remaining - Winner by default! Going to showdown.');
+            await supabase
+                .from('rooms')
+                .update({
+                    betting_round_complete: true,
+                    current_turn_seat_index: -1,
+                    game_status: 'showdown'  // Skip to showdown since there's a winner
+                })
+                .eq('id', roomId);
+            return;
+        }
+
         // Find current player position
         const currentPos = activePlayers.findIndex(p => p.seat_index === currentTurnSeatIndex);
         if (currentPos === -1) return;
 
         // Check if betting round is complete with FRESH data
         const allActed = activePlayers.every(p => p.has_acted_this_round);
-        const allBetsEqual = activePlayers.every(p => p.current_bet === freshHighestBet || p.is_folded);
+        const allBetsEqual = activePlayers.every(p => p.current_bet === freshHighestBet);
 
         console.log('🔍 Betting Round Check:', {
             allActed,
             allBetsEqual,
-            players: activePlayers.map(p => ({
+            activePlayers: activePlayers.map(p => ({
                 seatIndex: p.seat_index,
                 currentBet: p.current_bet,
                 hasActed: p.has_acted_this_round,
-                isFolded: p.is_folded
             })),
             highestBet: freshHighestBet
         });
@@ -792,7 +836,9 @@ export const usePokerRoom = () => {
     const playerFold = async (playerId: string) => {
         if (!roomId) return;
 
-        await supabase
+        console.log('🔴 Fold:', { playerId, roomId });
+
+        const { error } = await supabase
             .from('players')
             .update({
                 is_folded: true,
@@ -803,6 +849,12 @@ export const usePokerRoom = () => {
             .eq('user_id', playerId)  // Use user_id, not id
             .eq('room_id', roomId);
 
+        if (error) {
+            console.error('❌ Fold failed:', error);
+            return;
+        }
+
+        console.log('✅ Fold success, moving to next player');
         await moveToNextPlayer();
     };
 
